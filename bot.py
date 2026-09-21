@@ -27,13 +27,11 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_CONTACT = os.getenv("ADMIN_CONTACT", "@juesmely")
 
-# Поддержка одного или нескольких ID админов (через запятую)
-ADMIN_IDS_RAW = os.getenv("ADMIN_IDS", os.getenv("ADMIN_ID", "5014057300"))
+ADMIN_IDS_RAW = os.getenv("ADMIN_IDS", os.getenv("ADMIN_ID", "5014057300,944829858"))
 ADMIN_IDS: List[int] = [
     int(x.strip()) for x in ADMIN_IDS_RAW.split(",") if x.strip().isdigit()
 ]
 
-# Реквизиты
 SBP_PHONE = "89186675213"
 SBP_BANK = "Т-Банк"
 SBP_RECIPIENT = "Виолетта К."
@@ -44,10 +42,6 @@ GROUP_LINK = "https://t.me/+Drh0esF9_ZgyNzQ5"
 if not BOT_TOKEN:
     sys.exit("Ошибка: Токен бота не найден! Проверьте переменные окружения.")
 
-# ==========================================================
-# ПОСТОЯННОЕ ХРАНИЛИЩЕ ДЛЯ БАЗЫ ДАННЫХ
-# ==========================================================
-# Используем защищенную папку Bothost (/app/data), чтобы база не стиралась при пересборках
 PERSISTENT_DIR = os.getenv("DATA_DIR", "/app/data" if os.path.exists("/app/data") else ".")
 os.makedirs(PERSISTENT_DIR, exist_ok=True)
 DB_NAME = os.path.join(PERSISTENT_DIR, "fitness_club.db")
@@ -81,10 +75,6 @@ TARIFFS = {
 
 class ClientRegistration(StatesGroup):
     waiting_for_personal_data = State()
-
-# ==========================================================
-# РАБОТА С БАЗОЙ ДАННЫХ
-# ==========================================================
 
 async def init_db():
     async with aiosqlite.connect(DB_NAME) as db:
@@ -176,10 +166,6 @@ async def save_student_info(telegram_id: int, info: str):
         await db.execute("UPDATE users SET student_info = ? WHERE telegram_id = ?", (info, telegram_id))
         await db.commit()
 
-# ==========================================================
-# КЛАВИАТУРЫ
-# ==========================================================
-
 def get_main_menu_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -229,21 +215,20 @@ def get_admin_confirm_kb(user_id: int, tariff_key: str) -> InlineKeyboardMarkup:
         ]
     ])
 
-# ==========================================================
-# ОБРАБОТЧИКИ
-# ==========================================================
-
 dp = Dispatcher(storage=MemoryStorage())
 
 @dp.message(CommandStart())
 async def handle_start(message: types.Message, state: FSMContext):
     await state.clear()
     await get_or_create_user(message.from_user.id, message.from_user.username)
+    
     welcome_text = (
-        "Добро пожаловать в нашу студию танца!🫶🏻\n"
-        "Преподаем в направлениях jazz funk/girly hip-hop💘\n"
-        "Набираем девочек в группу возраст от 13 лет, расписание среда/суббота 18:00-19:00❣️\n"
-        "Мы находимся на Станиславского 85к1, всех ждём🫶🏻"
+        "✨ <b>Добро пожаловать в студию танца!</b> 🫶🏻\n\n"
+        "Раскрываем пластику, ритм и уверенность в себе через яркую современную хореографию 💘\n\n"
+        "💃 <b>Направления:</b> Jazz Funk / Girly Hip-Hop\n"
+        "👥 <b>Возраст:</b> Набор в группу для девочек от 13 лет\n"
+        "📍 <b>Локация:</b> ул. Станиславского, 85к1\n\n"
+        "Ждём вас на паркете! Выберите нужное действие в меню ниже ⬇️"
     )
     await message.answer(welcome_text, reply_markup=get_main_menu_kb())
 
@@ -348,7 +333,6 @@ async def handle_receive_student_data(message: types.Message, state: FSMContext,
         reply_markup=get_main_menu_kb()
     )
 
-    # Рассылка уведомления всем администраторам из списка
     if ADMIN_IDS:
         username_str = f"@{message.from_user.username}" if message.from_user.username else "не указан"
         admin_text = (
@@ -368,10 +352,6 @@ async def handle_receive_student_data(message: types.Message, state: FSMContext,
                 )
             except Exception as e:
                 logging.error(f"Не удалось отправить уведомление админу {admin_id}: {e}")
-
-# ==========================================================
-# ПОДТВЕРЖДЕНИЕ / ОТКЛОНЕНИЕ ОПЛАТ АДМИНИСТРАТОРОМ
-# ==========================================================
 
 @dp.callback_query(F.data.startswith("adm_confirm:"))
 async def handle_admin_confirm(callback: types.CallbackQuery, bot: Bot):
@@ -395,7 +375,7 @@ async def handle_admin_confirm(callback: types.CallbackQuery, bot: Bot):
                 f"Тариф: <b>{tariff['title']}</b>\n"
                 f"Действует до: <b>{formatted_end}</b> включительно.\n\n"
                 f"🔗 <b>Ссылка на закрытую группу:</b> {GROUP_LINK} 💘\n\n"
-                "Ждем вас на занятиях по адресу: ул. Станиславского 85к1🫶🏻"
+                "Ждем вас на занятиях по адресу: ул. Станиславского, 85к1🫶🏻"
             )
         )
     except Exception as e:
@@ -433,10 +413,6 @@ async def handle_admin_decline(callback: types.CallbackQuery, bot: Bot):
         f"❌ <b>ОПЛАТА ОТКЛОНЕНА</b> (админ: {admin_name})"
     )
     await callback.answer("Заявка отклонена")
-
-# ==========================================================
-# МЕНЮ ПОЛЬЗОВАТЕЛЯ
-# ==========================================================
 
 @dp.message(F.text == "📋 Мой абонемент")
 async def handle_my_sub(message: types.Message):
@@ -484,10 +460,6 @@ async def handle_contacts(message: types.Message):
         f"По всем вопросам и для записи пишите: {ADMIN_CONTACT}"
     )
 
-# ==========================================================
-# ТОЧКА ВХОДА
-# ==========================================================
-
 async def main():
     logging.basicConfig(level=logging.INFO)
     await init_db()
@@ -497,6 +469,13 @@ async def main():
         default=DefaultBotProperties(parse_mode=ParseMode.HTML)
     )
     
+    try:
+        await bot.set_my_description(
+            description="Добро пожаловать в нашу студию танца!🫶🏻"
+        )
+    except Exception as e:
+        logging.warning(f"Не удалось обновить описание бота: {e}")
+
     await bot.delete_webhook(drop_pending_updates=True)
     print(">>> ОБНОВЛЕННЫЙ ТАНЦЕВАЛЬНЫЙ БОТ ЗАПУЩЕН С ПОСТОЯННОЙ БАЗОЙ <<<")
     await dp.start_polling(bot)
