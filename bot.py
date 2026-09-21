@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.enums import ParseMode
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -23,6 +23,9 @@ from aiogram.types import (
     LinkPreviewOptions
 )
 
+# ==========================================================
+# 1. КОНФИГУРАЦИЯ
+# ==========================================================
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_CONTACT = os.getenv("ADMIN_CONTACT", "@juesmely")
@@ -73,8 +76,21 @@ TARIFFS = {
     }
 }
 
+# ==========================================================
+# 2. СОСТОЯНИЯ (FSM)
+# ==========================================================
+
 class ClientRegistration(StatesGroup):
     waiting_for_personal_data = State()
+
+class AdminStates(StatesGroup):
+    waiting_for_broadcast = State()
+    waiting_for_manual_id = State()
+    waiting_for_manual_name = State()
+
+# ==========================================================
+# 3. БАЗА ДАННЫХ
+# ==========================================================
 
 async def init_db():
     async with aiosqlite.connect(DB_NAME) as db:
@@ -166,6 +182,42 @@ async def save_student_info(telegram_id: int, info: str):
         await db.execute("UPDATE users SET student_info = ? WHERE telegram_id = ?", (info, telegram_id))
         await db.commit()
 
+async def get_db_stats() -> Dict[str, int]:
+    now_iso = datetime.now().isoformat()
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT COUNT(*) FROM users") as cur:
+            total_users = (await cur.fetchone())[0]
+        async with db.execute("SELECT COUNT(*) FROM users WHERE has_used_trial = 1") as cur:
+            trials_used = (await cur.fetchone())[0]
+        async with db.execute("SELECT COUNT(*) FROM users WHERE subscription_end_date > ?", (now_iso,)) as cur:
+            active_subs = (await cur.fetchone())[0]
+    return {
+        "total_users": total_users,
+        "trials_used": trials_used,
+        "active_subs": active_subs
+    }
+
+async def get_active_students() -> List[Dict[str, Any]]:
+    now_iso = datetime.now().isoformat()
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM users WHERE subscription_end_date > ? ORDER BY subscription_end_date ASC",
+            (now_iso,)
+        ) as cur:
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
+
+async def get_all_user_ids() -> List[int]:
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT telegram_id FROM users") as cur:
+            rows = await cur.fetchall()
+            return [r[0] for r in rows]
+
+# ==========================================================
+# 4. КЛАВИАТУРЫ
+# ==========================================================
+
 def get_main_menu_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -181,7 +233,6 @@ def get_tariffs_kb(has_used_trial: bool) -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton(text="🧪 Тест (для проверки) — 1 ₽", callback_data="buy:test")]
     ]
-    
     if not has_used_trial:
         buttons.append([
             InlineKeyboardButton(text="✨ Пробное занятие — 600 ₽", callback_data="buy:trial")
@@ -197,7 +248,6 @@ def get_tariffs_kb(has_used_trial: bool) -> InlineKeyboardMarkup:
     buttons.append([
         InlineKeyboardButton(text="⭐ Абонемент на месяц — 3 990 ₽", callback_data="buy:month")
     ])
-    
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def get_sbp_payment_kb(tariff_key: str) -> InlineKeyboardMarkup:
@@ -214,6 +264,35 @@ def get_admin_confirm_kb(user_id: int, tariff_key: str) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="❌ Отклонить", callback_data=f"adm_decline:{user_id}")
         ]
     ])
+
+def get_admin_main_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📊 Статистика", callback_data="adm_panel:stats"),
+            InlineKeyboardButton(text="📋 Активные абонементы", callback_data="adm_panel:students")
+        ],
+        [
+            InlineKeyboardButton(text="➕ Выдать абонемент вручную", callback_data="adm_panel:manual_sub")
+        ],
+        [
+            InlineKeyboardButton(text="📢 Рассылка сообщений", callback_data="adm_panel:broadcast")
+        ],
+        [
+            InlineKeyboardButton(text="❌ Закрыть меню", callback_data="adm_panel:close")
+        ]
+    ])
+
+def get_manual_tariffs_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Пробное (1 день)", callback_data="adm_grant:trial")],
+        [InlineKeyboardButton(text="Разовое (1 день)", callback_data="adm_grant:single")],
+        [InlineKeyboardButton(text="Абонемент (30 дней)", callback_data="adm_grant:month")],
+        [InlineKeyboardButton(text="« Отмена", callback_data="adm_panel:cancel")]
+    ])
+
+# ==========================================================
+# 5. ХЭНДЛЕРЫ КЛИЕНТСКОЙ ЧАСТИ
+# ==========================================================
 
 dp = Dispatcher(storage=MemoryStorage())
 
@@ -460,6 +539,223 @@ async def handle_contacts(message: types.Message):
         f"По всем вопросам и для записи пишите: {ADMIN_CONTACT}"
     )
 
+# ==========================================================
+# 6. АДМИН-ПАНЕЛЬ (/admin)
+# ==========================================================
+
+@dp.message(Command("admin"))
+async def handle_admin_command(message: types.Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    await state.clear()
+    await message.answer(
+        "👑 <b>Панель управления студией:</b>\n\n"
+        "Выберите действие из меню ниже:",
+        reply_markup=get_admin_main_kb()
+    )
+
+@dp.callback_query(F.data == "adm_panel:close")
+async def handle_admin_close(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in ADMIN_IDS:
+        return
+    await state.clear()
+    await callback.message.delete()
+    await callback.answer()
+
+@dp.callback_query(F.data == "adm_panel:cancel")
+async def handle_admin_cancel(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in ADMIN_IDS:
+        return
+    await state.clear()
+    await callback.message.edit_text(
+        "👑 <b>Панель управления студией:</b>",
+        reply_markup=get_admin_main_kb()
+    )
+    await callback.answer("Действие отменено")
+
+@dp.callback_query(F.data == "adm_panel:stats")
+async def handle_admin_stats(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        return
+
+    stats = await get_db_stats()
+    text = (
+        "📊 <b>Текущая статистика студии:</b>\n\n"
+        f"👥 Всего пользователей в базе: <b>{stats['total_users']}</b>\n"
+        f"🎟 Использовано пробных занятий: <b>{stats['trials_used']}</b>\n"
+        f"⭐ Активных абонементов сейчас: <b>{stats['active_subs']}</b>"
+    )
+    await callback.message.edit_text(text, reply_markup=get_admin_main_kb())
+    await callback.answer()
+
+@dp.callback_query(F.data == "adm_panel:students")
+async def handle_admin_students(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        return
+
+    students = await get_active_students()
+    if not students:
+        await callback.message.edit_text(
+            "📋 В данный момент нет действующих активных абонементов.",
+            reply_markup=get_admin_main_kb()
+        )
+        await callback.answer()
+        return
+
+    text_lines = ["📋 <b>Список активных учениц:</b>\n"]
+    for idx, s in enumerate(students, 1):
+        name = s.get("student_info") or "Имя не указано"
+        uname = f"(@{s['username']})" if s.get("username") else f"(ID: {s['telegram_id']})"
+        end_d = datetime.fromisoformat(s["subscription_end_date"]).strftime("%d.%m.%Y")
+        stype = s.get("subscription_type") or "Абонемент"
+        text_lines.append(f"{idx}. <b>{name}</b> {uname}\n   • {stype} — до {end_d}")
+
+    full_text = "\n".join(text_lines)
+    if len(full_text) > 4000:
+        full_text = full_text[:4000] + "\n... (список обрезан)"
+
+    await callback.message.edit_text(full_text, reply_markup=get_admin_main_kb())
+    await callback.answer()
+
+# --- Ручная выдача абонемента ---
+@dp.callback_query(F.data == "adm_panel:manual_sub")
+async def handle_manual_sub_start(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in ADMIN_IDS:
+        return
+
+    await state.set_state(AdminStates.waiting_for_manual_id)
+    await callback.message.edit_text(
+        "➕ <b>Ручная выдача абонемента:</b>\n\n"
+        "Отправьте ответным сообщением <b>Telegram ID</b> ученицы (только цифры):\n"
+        "<i>(Ученица может узнать свой ID через @userinfobot)</i>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="« Отмена", callback_data="adm_panel:cancel")]
+        ])
+    )
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_for_manual_id)
+async def handle_manual_id_input(message: types.Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    text = message.text.strip()
+    if not text.isdigit():
+        await message.answer("⚠️ ID должен состоять только из цифр. Попробуйте еще раз или нажмите /admin для отмены:")
+        return
+
+    user_id = int(text)
+    await state.update_data(target_user_id=user_id)
+    await state.set_state(AdminStates.waiting_for_manual_name)
+    await message.answer(
+        f"Отлично. Теперь введите <b>ФИО и дату рождения</b> ученицы для ID <code>{user_id}</code>:"
+    )
+
+@dp.message(AdminStates.waiting_for_manual_name)
+async def handle_manual_name_input(message: types.Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    student_name = message.text.strip()
+    await state.update_data(target_student_name=student_name)
+    await message.answer(
+        f"Ученица: <b>{student_name}</b>\n\n"
+        "Выберите тариф для ручной активации:",
+        reply_markup=get_manual_tariffs_kb()
+    )
+
+@dp.callback_query(F.data.startswith("adm_grant:"))
+async def handle_manual_grant(callback: types.CallbackQuery, state: FSMContext, bot: Bot):
+    if callback.from_user.id not in ADMIN_IDS:
+        return
+
+    tariff_key = callback.data.split(":")[1]
+    tariff = TARIFFS.get(tariff_key)
+
+    state_data = await state.get_data()
+    user_id = state_data.get("target_user_id")
+    student_name = state_data.get("target_student_name")
+    await state.clear()
+
+    # Создаем или находим запись в базе
+    await get_or_create_user(user_id, username=None)
+    await save_student_info(user_id, student_name)
+    _, end_date = await activate_subscription(user_id, tariff_key)
+    formatted_end = end_date.strftime("%d.%m.%Y")
+
+    # Уведомляем клиента
+    try:
+        await bot.send_message(
+            chat_id=user_id,
+            text=(
+                f"🎉 <b>Вам активирован абонемент администратором студии!</b>\n\n"
+                f"Тариф: <b>{tariff['title']}</b>\n"
+                f"Действует до: <b>{formatted_end}</b> включительно.\n\n"
+                f"🔗 <b>Ссылка на закрытую группу:</b> {GROUP_LINK} 💘\n\n"
+                "Ждем вас на занятиях по адресу: ул. Станиславского, 85к1🫶🏻"
+            )
+        )
+    except Exception as e:
+        logging.warning(f"Не удалось отправить уведомление пользователю {user_id}: {e}")
+
+    await callback.message.edit_text(
+        f"✅ <b>Абонемент успешно выдан!</b>\n\n"
+        f"• Ученица: <b>{student_name}</b> (ID: <code>{user_id}</code>)\n"
+        f"• Тариф: {tariff['title']}\n"
+        f"• Срок: до {formatted_end}",
+        reply_markup=get_admin_main_kb()
+    )
+    await callback.answer()
+
+# --- Массовая рассылка ---
+@dp.callback_query(F.data == "adm_panel:broadcast")
+async def handle_broadcast_start(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in ADMIN_IDS:
+        return
+
+    await state.set_state(AdminStates.waiting_for_broadcast)
+    await callback.message.edit_text(
+        "📢 <b>Рассылка сообщений:</b>\n\n"
+        "Отправьте следующее сообщение, которое хотите разослать всем пользователям бота (поддерживаются текст, фото и форматирование):\n\n"
+        "<i>Для отмены нажмите кнопку ниже:</i>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="« Отмена", callback_data="adm_panel:cancel")]
+        ])
+    )
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_for_broadcast)
+async def handle_broadcast_send(message: types.Message, state: FSMContext, bot: Bot):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    await state.clear()
+    user_ids = await get_all_user_ids()
+    status_msg = await message.answer(f"⏳ Запуск рассылки на <b>{len(user_ids)}</b> пользователей...")
+
+    success = 0
+    failed = 0
+
+    for uid in user_ids:
+        try:
+            await message.copy_to(chat_id=uid)
+            success += 1
+            await asyncio.sleep(0.05)  # Защита от ограничений Telegram Flood Control
+        except Exception:
+            failed += 1
+
+    await status_msg.edit_text(
+        f"✅ <b>Рассылка завершена!</b>\n\n"
+        f"• Успешно доставлено: <b>{success}</b>\n"
+        f"• Не удалось отправить: <b>{failed}</b> (заблокировали бота или удалили аккаунт)",
+        reply_markup=get_admin_main_kb()
+    )
+
+# ==========================================================
+# 7. ТОЧКА ВХОДА
+# ==========================================================
+
 async def main():
     logging.basicConfig(level=logging.INFO)
     await init_db()
@@ -477,7 +773,7 @@ async def main():
         logging.warning(f"Не удалось обновить описание бота: {e}")
 
     await bot.delete_webhook(drop_pending_updates=True)
-    print(">>> ОБНОВЛЕННЫЙ ТАНЦЕВАЛЬНЫЙ БОТ ЗАПУЩЕН С ПОСТОЯННОЙ БАЗОЙ <<<")
+    print(">>> ОБНОВЛЕННЫЙ ТАНЦЕВАЛЬНЫЙ БОТ С АДМИН-ПАНЕЛЬЮ ЗАПУЩЕН <<<")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
