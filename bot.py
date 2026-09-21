@@ -19,26 +19,32 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
     KeyboardButton,
     InlineKeyboardMarkup,
-    InlineKeyboardButton
+    InlineKeyboardButton,
+    LinkPreviewOptions
 )
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_CONTACT = os.getenv("ADMIN_CONTACT", "@juesmely")
-ADMIN_ID = os.getenv("ADMIN_ID")
+ADMIN_ID = os.getenv("ADMIN_ID", "5014057300")
+
+# Реквизиты студии
+SBP_PHONE = "89186675213"
+SBP_BANK = "Т-Банк"
+SBP_RECIPIENT = "Виолетта К."
 
 PAYMENT_LINK = "https://www.tinkoff.ru/rm/r_BoqThxuSKz.joZTwrhWWS/9Y3vz14923"
 GROUP_LINK = "https://t.me/+Drh0esF9_ZgyNzQ5"
 
 if not BOT_TOKEN:
-    sys.exit("Ошибка: Токен бота не найден! Проверьте файл .env")
+    sys.exit("Ошибка: Токен бота не найден! Проверьте переменные окружения.")
 
 DB_NAME = "fitness_club.db"
 
-# Каталог тарифов с добавленным тестовым платежом на 1 рубль
+# Каталог тарифов с тестовым платежом
 TARIFFS = {
     "test": {
-        "title": "Тестовая оплата (проверка работы)",
+        "title": "Тестовая оплата (проверка)",
         "price": 1,
         "days": 1,
         "is_trial": False
@@ -67,7 +73,7 @@ class ClientRegistration(StatesGroup):
     waiting_for_personal_data = State()
 
 # ==========================================================
-# РАБОТА С БАЗОЙ ДАННЫХ
+# БАЗА ДАННЫХ
 # ==========================================================
 
 async def init_db():
@@ -161,7 +167,7 @@ async def save_student_info(telegram_id: int, info: str):
         await db.commit()
 
 # ==========================================================
-# КЛАВИАТУРЫ
+# ИНТЕРФЕЙС И КЛАВИАТУРЫ
 # ==========================================================
 
 def get_main_menu_kb() -> ReplyKeyboardMarkup:
@@ -200,7 +206,7 @@ def get_tariffs_kb(has_used_trial: bool) -> InlineKeyboardMarkup:
 
 def get_sbp_payment_kb(tariff_key: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔗 Оплатить через СБП", url=PAYMENT_LINK)],
+        [InlineKeyboardButton(text="🔗 Оплатить по ссылке Т-Банка", url=PAYMENT_LINK)],
         [InlineKeyboardButton(text="✅ Я оплатила", callback_data=f"paid:{tariff_key}")],
         [InlineKeyboardButton(text="« Назад к тарифам", callback_data="back_to_tariffs")]
     ])
@@ -214,7 +220,7 @@ def get_admin_confirm_kb(user_id: int, tariff_key: str) -> InlineKeyboardMarkup:
     ])
 
 # ==========================================================
-# ОБРАБОТЧИКИ СООБЩЕНИЙ И НАЖАТИЙ
+# ОБРАБОТЧИКИ
 # ==========================================================
 
 dp = Dispatcher(storage=MemoryStorage())
@@ -261,11 +267,23 @@ async def handle_select_tariff(callback: types.CallbackQuery):
     text = (
         f"Вы выбрали: <b>{tariff['title']}</b>\n"
         f"Сумма к оплате: <b>{tariff['price']} ₽</b>\n\n"
-        "Перейдите по кнопке ниже и оплатите через СБП.\n"
-        "После совершения перевода нажмите кнопку <b>«✅ Я оплатила»</b>:"
+        f"📱 <b>Способ 1: Перевод по СБП (напрямую в банк):</b>\n"
+        f"• Номер телефона: <code>{SBP_PHONE}</code> <i>(нажмите для копирования)</i>\n"
+        f"• Банк: <b>{SBP_BANK}</b>\n"
+        f"• Получатель: <b>{SBP_RECIPIENT}</b>\n\n"
+        f"⚠️ <b>ВАЖНО:</b> в комментарии к переводу обязательно напишите ваши <b>ФИО и дату рождения</b>!\n\n"
+        f"───────────────\n"
+        f"🔗 <b>Способ 2: Оплата по ссылке:</b>\n"
+        f"{PAYMENT_LINK}\n"
+        f"<i>(Если по ссылке белый экран — откройте её через браузер телефона или переведите по номеру выше)</i>\n\n"
+        f"После оплаты нажмите кнопку <b>«✅ Я оплатила»</b> ниже:"
     )
 
-    await callback.message.edit_text(text, reply_markup=get_sbp_payment_kb(tariff_key))
+    await callback.message.edit_text(
+        text,
+        reply_markup=get_sbp_payment_kb(tariff_key),
+        link_preview_options=LinkPreviewOptions(is_disabled=True)
+    )
     await callback.answer()
 
 @dp.callback_query(F.data == "back_to_tariffs")
@@ -329,7 +347,7 @@ async def handle_receive_student_data(message: types.Message, state: FSMContext,
             f"👤 <b>Клиентка:</b> {student_data}\n"
             f"📱 <b>Telegram:</b> {username_str} (ID: <code>{message.from_user.id}</code>)\n"
             f"📅 <b>Время заявки:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n"
-            "Проверьте поступление средств на счёте и нажмите нужную кнопку:"
+            "Проверьте поступление средств в Т-Банке (по ФИО в комментарии) и нажмите кнопку:"
         )
         try:
             await bot.send_message(
@@ -341,7 +359,7 @@ async def handle_receive_student_data(message: types.Message, state: FSMContext,
             logging.error(f"Не удалось отправить уведомление админу: {e}")
 
 # ==========================================================
-# ПОДТВЕРЖДЕНИЕ ИЛИ ОТКЛОНЕНИЕ АДМИНИСТРАТОРОМ
+# ПОДТВЕРЖДЕНИЕ / ОТКЛОНЕНИЕ
 # ==========================================================
 
 @dp.callback_query(F.data.startswith("adm_confirm:"))
@@ -361,7 +379,7 @@ async def handle_admin_confirm(callback: types.CallbackQuery, bot: Bot):
                 f"🎉 <b>Оплата подтверждена!</b>\n\n"
                 f"Тариф: <b>{tariff['title']}</b>\n"
                 f"Действует до: <b>{formatted_end}</b> включительно.\n\n"
-                f"🔗 <b>Ссылка на группу:</b> {GROUP_LINK} 💘\n\n"
+                f"🔗 <b>Ссылка на закрытую группу:</b> {GROUP_LINK} 💘\n\n"
                 "Ждем вас на занятиях по адресу: ул. Станиславского 85к1🫶🏻"
             )
         )
@@ -370,9 +388,9 @@ async def handle_admin_confirm(callback: types.CallbackQuery, bot: Bot):
 
     await callback.message.edit_text(
         f"{callback.message.text}\n\n"
-        f"✅ <b>ОПЛАТА ПОДТВЕРЖДЕНА</b>"
+        f"✅ <b>ОПЛАТА ПОДТВЕРЖДЕНА АДМИНИСТРАТОРОМ</b>"
     )
-    await callback.answer("Оплата подтверждена, ссылка отправлена клиенту!")
+    await callback.answer("Оплата подтверждена, ссылка отправлена!")
 
 @dp.callback_query(F.data.startswith("adm_decline:"))
 async def handle_admin_decline(callback: types.CallbackQuery, bot: Bot):
@@ -383,7 +401,7 @@ async def handle_admin_decline(callback: types.CallbackQuery, bot: Bot):
             chat_id=user_id,
             text=(
                 "❌ <b>Оплата не была найдена.</b>\n\n"
-                f"Если вы совершили перевод, пожалуйста, свяжитесь с нами для уточнения: {ADMIN_CONTACT}"
+                f"Если перевод был отправлен, пожалуйста, свяжитесь с нами: {ADMIN_CONTACT}"
             )
         )
     except Exception as e:
@@ -396,7 +414,7 @@ async def handle_admin_decline(callback: types.CallbackQuery, bot: Bot):
     await callback.answer("Заявка отклонена")
 
 # ==========================================================
-# МЕНЮ ПОЛЬЗОВАТЕЛЯ
+# МЕНЮ
 # ==========================================================
 
 @dp.message(F.text == "📋 Мой абонемент")
@@ -457,7 +475,7 @@ async def main():
     )
     
     await bot.delete_webhook(drop_pending_updates=True)
-    print(">>> БОТ ОБНОВЛЕН И ЗАПУЩЕН <<<")
+    print(">>> ОБНОВЛЕННЫЙ ТАНЦЕВАЛЬНЫЙ БОТ УСПЕШНО ЗАПУЩЕН <<<")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
