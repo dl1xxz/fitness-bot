@@ -3,7 +3,7 @@ import sys
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 import aiosqlite
 from dotenv import load_dotenv
@@ -26,9 +26,14 @@ from aiogram.types import (
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_CONTACT = os.getenv("ADMIN_CONTACT", "@juesmely")
-ADMIN_ID = os.getenv("ADMIN_ID", "5014057300")
 
-# Реквизиты студии
+# Поддержка одного или нескольких ID админов (через запятую)
+ADMIN_IDS_RAW = os.getenv("ADMIN_IDS", os.getenv("ADMIN_ID", "5014057300"))
+ADMIN_IDS: List[int] = [
+    int(x.strip()) for x in ADMIN_IDS_RAW.split(",") if x.strip().isdigit()
+]
+
+# Реквизиты
 SBP_PHONE = "89186675213"
 SBP_BANK = "Т-Банк"
 SBP_RECIPIENT = "Виолетта К."
@@ -39,9 +44,14 @@ GROUP_LINK = "https://t.me/+Drh0esF9_ZgyNzQ5"
 if not BOT_TOKEN:
     sys.exit("Ошибка: Токен бота не найден! Проверьте переменные окружения.")
 
-DB_NAME = "fitness_club.db"
+# ==========================================================
+# ПОСТОЯННОЕ ХРАНИЛИЩЕ ДЛЯ БАЗЫ ДАННЫХ
+# ==========================================================
+# Используем защищенную папку Bothost (/app/data), чтобы база не стиралась при пересборках
+PERSISTENT_DIR = os.getenv("DATA_DIR", "/app/data" if os.path.exists("/app/data") else ".")
+os.makedirs(PERSISTENT_DIR, exist_ok=True)
+DB_NAME = os.path.join(PERSISTENT_DIR, "fitness_club.db")
 
-# Каталог тарифов с тестовым платежом
 TARIFFS = {
     "test": {
         "title": "Тестовая оплата (проверка)",
@@ -73,7 +83,7 @@ class ClientRegistration(StatesGroup):
     waiting_for_personal_data = State()
 
 # ==========================================================
-# БАЗА ДАННЫХ
+# РАБОТА С БАЗОЙ ДАННЫХ
 # ==========================================================
 
 async def init_db():
@@ -167,7 +177,7 @@ async def save_student_info(telegram_id: int, info: str):
         await db.commit()
 
 # ==========================================================
-# ИНТЕРФЕЙС И КЛАВИАТУРЫ
+# КЛАВИАТУРЫ
 # ==========================================================
 
 def get_main_menu_kb() -> ReplyKeyboardMarkup:
@@ -274,8 +284,7 @@ async def handle_select_tariff(callback: types.CallbackQuery):
         f"⚠️ <b>ВАЖНО:</b> в комментарии к переводу обязательно напишите ваши <b>ФИО и дату рождения</b>!\n\n"
         f"───────────────\n"
         f"🔗 <b>Способ 2: Оплата по ссылке:</b>\n"
-        f"{PAYMENT_LINK}\n"
-        f"<i>(Если по ссылке белый экран — откройте её через браузер телефона или переведите по номеру выше)</i>\n\n"
+        f"{PAYMENT_LINK}\n\n"
         f"После оплаты нажмите кнопку <b>«✅ Я оплатила»</b> ниже:"
     )
 
@@ -339,7 +348,8 @@ async def handle_receive_student_data(message: types.Message, state: FSMContext,
         reply_markup=get_main_menu_kb()
     )
 
-    if ADMIN_ID:
+    # Рассылка уведомления всем администраторам из списка
+    if ADMIN_IDS:
         username_str = f"@{message.from_user.username}" if message.from_user.username else "не указан"
         admin_text = (
             "🔔 <b>Новая оплата на проверку!</b>\n\n"
@@ -347,23 +357,28 @@ async def handle_receive_student_data(message: types.Message, state: FSMContext,
             f"👤 <b>Клиентка:</b> {student_data}\n"
             f"📱 <b>Telegram:</b> {username_str} (ID: <code>{message.from_user.id}</code>)\n"
             f"📅 <b>Время заявки:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n"
-            "Проверьте поступление средств в Т-Банке (по ФИО в комментарии) и нажмите кнопку:"
+            "Проверьте поступление средств и подтвердите оплату:"
         )
-        try:
-            await bot.send_message(
-                chat_id=int(ADMIN_ID),
-                text=admin_text,
-                reply_markup=get_admin_confirm_kb(message.from_user.id, tariff_key)
-            )
-        except Exception as e:
-            logging.error(f"Не удалось отправить уведомление админу: {e}")
+        for admin_id in ADMIN_IDS:
+            try:
+                await bot.send_message(
+                    chat_id=admin_id,
+                    text=admin_text,
+                    reply_markup=get_admin_confirm_kb(message.from_user.id, tariff_key)
+                )
+            except Exception as e:
+                logging.error(f"Не удалось отправить уведомление админу {admin_id}: {e}")
 
 # ==========================================================
-# ПОДТВЕРЖДЕНИЕ / ОТКЛОНЕНИЕ
+# ПОДТВЕРЖДЕНИЕ / ОТКЛОНЕНИЕ ОПЛАТ АДМИНИСТРАТОРОМ
 # ==========================================================
 
 @dp.callback_query(F.data.startswith("adm_confirm:"))
 async def handle_admin_confirm(callback: types.CallbackQuery, bot: Bot):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("У вас нет прав администратора!", show_alert=True)
+        return
+
     parts = callback.data.split(":")
     user_id = int(parts[1])
     tariff_key = parts[2]
@@ -384,16 +399,21 @@ async def handle_admin_confirm(callback: types.CallbackQuery, bot: Bot):
             )
         )
     except Exception as e:
-        logging.error(f"Не удалось отправить сообщение клиенту: {e}")
+        logging.error(f"Не удалось отправить сообщение клиенту {user_id}: {e}")
 
+    admin_name = callback.from_user.first_name or "Администратор"
     await callback.message.edit_text(
         f"{callback.message.text}\n\n"
-        f"✅ <b>ОПЛАТА ПОДТВЕРЖДЕНА АДМИНИСТРАТОРОМ</b>"
+        f"✅ <b>ОПЛАТА ПОДТВЕРЖДЕНА</b> (админ: {admin_name})"
     )
-    await callback.answer("Оплата подтверждена, ссылка отправлена!")
+    await callback.answer("Оплата подтверждена!")
 
 @dp.callback_query(F.data.startswith("adm_decline:"))
 async def handle_admin_decline(callback: types.CallbackQuery, bot: Bot):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("У вас нет прав администратора!", show_alert=True)
+        return
+
     user_id = int(callback.data.split(":")[1])
 
     try:
@@ -405,16 +425,17 @@ async def handle_admin_decline(callback: types.CallbackQuery, bot: Bot):
             )
         )
     except Exception as e:
-        logging.error(f"Не удалось отправить сообщение клиенту: {e}")
+        logging.error(f"Не удалось отправить сообщение клиенту {user_id}: {e}")
 
+    admin_name = callback.from_user.first_name or "Администратор"
     await callback.message.edit_text(
         f"{callback.message.text}\n\n"
-        f"❌ <b>ОПЛАТА ОТКЛОНЕНА</b>"
+        f"❌ <b>ОПЛАТА ОТКЛОНЕНА</b> (админ: {admin_name})"
     )
     await callback.answer("Заявка отклонена")
 
 # ==========================================================
-# МЕНЮ
+# МЕНЮ ПОЛЬЗОВАТЕЛЯ
 # ==========================================================
 
 @dp.message(F.text == "📋 Мой абонемент")
@@ -423,6 +444,7 @@ async def handle_my_sub(message: types.Message):
     sub_type = user.get("subscription_type")
     start_date_str = user.get("subscription_start_date")
     end_date_str = user.get("subscription_end_date")
+    student_name = user.get("student_info") or "Данные не указаны"
 
     if not sub_type or not end_date_str:
         await message.answer("У вас нет активного абонемента.")
@@ -450,9 +472,10 @@ async def handle_my_sub(message: types.Message):
 
     await message.answer(
         f"📋 <b>Информация о вашем абонементе:</b>\n\n"
-        f"• Направление: <b>{sub_type}</b>\n"
-        f"• Был оплачен: <b>{formatted_start}</b>\n"
-        f"• Действует до: <b>{formatted_end}</b> включительно."
+        f"👤 <b>Ученица:</b> {student_name}\n"
+        f"💃 <b>Направление / Тариф:</b> {sub_type}\n"
+        f"📅 <b>Был оплачен:</b> {formatted_start}\n"
+        f"⏳ <b>Действует до:</b> {formatted_end} включительно."
     )
 
 @dp.message(F.text == "📞 Связаться с нами")
@@ -475,7 +498,7 @@ async def main():
     )
     
     await bot.delete_webhook(drop_pending_updates=True)
-    print(">>> ОБНОВЛЕННЫЙ ТАНЦЕВАЛЬНЫЙ БОТ УСПЕШНО ЗАПУЩЕН <<<")
+    print(">>> ОБНОВЛЕННЫЙ ТАНЦЕВАЛЬНЫЙ БОТ ЗАПУЩЕН С ПОСТОЯННОЙ БАЗОЙ <<<")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
