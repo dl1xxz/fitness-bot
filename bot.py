@@ -30,10 +30,15 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_CONTACT = os.getenv("ADMIN_CONTACT", "@juesmely")
 
-ADMIN_IDS_RAW = os.getenv("ADMIN_IDS", os.getenv("ADMIN_ID", "5014057300,944829858"))
-ADMIN_IDS: List[int] = [
-    int(x.strip()) for x in ADMIN_IDS_RAW.split(",") if x.strip().isdigit()
-]
+# Оба администратора жестко зафиксированы в коде
+ADMIN_IDS: List[int] = [5014057300, 944829858]
+
+# Дополнительно подтягиваем ID из переменных окружения, если они там указаны
+env_admins = os.getenv("ADMIN_IDS", "")
+for item in env_admins.split(","):
+    clean_id = item.strip()
+    if clean_id.isdigit() and int(clean_id) not in ADMIN_IDS:
+        ADMIN_IDS.append(int(clean_id))
 
 SBP_PHONE = "89186675213"
 SBP_BANK = "Т-Банк"
@@ -45,6 +50,7 @@ GROUP_LINK = "https://t.me/+Drh0esF9_ZgyNzQ5"
 if not BOT_TOKEN:
     sys.exit("Ошибка: Токен бота не найден! Проверьте переменные окружения.")
 
+# Защищенная папка для постоянного хранения базы данных
 PERSISTENT_DIR = os.getenv("DATA_DIR", "/app/data" if os.path.exists("/app/data") else ".")
 os.makedirs(PERSISTENT_DIR, exist_ok=True)
 DB_NAME = os.path.join(PERSISTENT_DIR, "fitness_club.db")
@@ -412,25 +418,24 @@ async def handle_receive_student_data(message: types.Message, state: FSMContext,
         reply_markup=get_main_menu_kb()
     )
 
-    if ADMIN_IDS:
-        username_str = f"@{message.from_user.username}" if message.from_user.username else "не указан"
-        admin_text = (
-            "🔔 <b>Новая оплата на проверку!</b>\n\n"
-            f"💃 <b>Тариф:</b> {tariff_title} ({tariff_price} ₽)\n"
-            f"👤 <b>Клиентка:</b> {student_data}\n"
-            f"📱 <b>Telegram:</b> {username_str} (ID: <code>{message.from_user.id}</code>)\n"
-            f"📅 <b>Время заявки:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n"
-            "Проверьте поступление средств и подтвердите оплату:"
-        )
-        for admin_id in ADMIN_IDS:
-            try:
-                await bot.send_message(
-                    chat_id=admin_id,
-                    text=admin_text,
-                    reply_markup=get_admin_confirm_kb(message.from_user.id, tariff_key)
-                )
-            except Exception as e:
-                logging.error(f"Не удалось отправить уведомление админу {admin_id}: {e}")
+    username_str = f"@{message.from_user.username}" if message.from_user.username else "не указан"
+    admin_text = (
+        "🔔 <b>Новая оплата на проверку!</b>\n\n"
+        f"💃 <b>Тариф:</b> {tariff_title} ({tariff_price} ₽)\n"
+        f"👤 <b>Клиентка:</b> {student_data}\n"
+        f"📱 <b>Telegram:</b> {username_str} (ID: <code>{message.from_user.id}</code>)\n"
+        f"📅 <b>Время заявки:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n"
+        "Проверьте поступление средств и подтвердите оплату:"
+    )
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(
+                chat_id=admin_id,
+                text=admin_text,
+                reply_markup=get_admin_confirm_kb(message.from_user.id, tariff_key)
+            )
+        except Exception as e:
+            logging.error(f"Не удалось отправить уведомление админу {admin_id}: {e}")
 
 @dp.callback_query(F.data.startswith("adm_confirm:"))
 async def handle_admin_confirm(callback: types.CallbackQuery, bot: Bot):
@@ -546,6 +551,10 @@ async def handle_contacts(message: types.Message):
 @dp.message(Command("admin"))
 async def handle_admin_command(message: types.Message, state: FSMContext):
     if message.from_user.id not in ADMIN_IDS:
+        await message.answer(
+            f"⛔ <b>Доступ запрещен.</b>\nВаш ID: <code>{message.from_user.id}</code>\n"
+            "Этот аккаунт не найден в списке администраторов."
+        )
         return
 
     await state.clear()
@@ -618,7 +627,6 @@ async def handle_admin_students(callback: types.CallbackQuery):
     await callback.message.edit_text(full_text, reply_markup=get_admin_main_kb())
     await callback.answer()
 
-# --- Ручная выдача абонемента ---
 @dp.callback_query(F.data == "adm_panel:manual_sub")
 async def handle_manual_sub_start(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id not in ADMIN_IDS:
@@ -678,13 +686,11 @@ async def handle_manual_grant(callback: types.CallbackQuery, state: FSMContext, 
     student_name = state_data.get("target_student_name")
     await state.clear()
 
-    # Создаем или находим запись в базе
     await get_or_create_user(user_id, username=None)
     await save_student_info(user_id, student_name)
     _, end_date = await activate_subscription(user_id, tariff_key)
     formatted_end = end_date.strftime("%d.%m.%Y")
 
-    # Уведомляем клиента
     try:
         await bot.send_message(
             chat_id=user_id,
@@ -708,7 +714,6 @@ async def handle_manual_grant(callback: types.CallbackQuery, state: FSMContext, 
     )
     await callback.answer()
 
-# --- Массовая рассылка ---
 @dp.callback_query(F.data == "adm_panel:broadcast")
 async def handle_broadcast_start(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id not in ADMIN_IDS:
@@ -741,7 +746,7 @@ async def handle_broadcast_send(message: types.Message, state: FSMContext, bot: 
         try:
             await message.copy_to(chat_id=uid)
             success += 1
-            await asyncio.sleep(0.05)  # Защита от ограничений Telegram Flood Control
+            await asyncio.sleep(0.05)
         except Exception:
             failed += 1
 
@@ -773,7 +778,7 @@ async def main():
         logging.warning(f"Не удалось обновить описание бота: {e}")
 
     await bot.delete_webhook(drop_pending_updates=True)
-    print(">>> ОБНОВЛЕННЫЙ ТАНЦЕВАЛЬНЫЙ БОТ С АДМИН-ПАНЕЛЬЮ ЗАПУЩЕН <<<")
+    print(f">>> БОТ ЗАПУЩЕН! СПИСОК АДМИНИСТРАТОРОВ: {ADMIN_IDS} <<<")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
