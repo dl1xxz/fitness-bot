@@ -30,16 +30,17 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_CONTACT = os.getenv("ADMIN_CONTACT", "@juesmely")
 
-# Оба администратора жестко зафиксированы в коде
-ADMIN_IDS: List[int] = [5014057300, 944829858]
+# Администраторы с полным доступом к панели и подтверждениям
+ADMIN_IDS: List[int] = [5014057300, 8772019633, 944829858]
 
-# Дополнительно подтягиваем ID из переменных окружения, если они там указаны
+# Дополнительное чтение ID из переменных окружения (если указаны на хостинге)
 env_admins = os.getenv("ADMIN_IDS", "")
 for item in env_admins.split(","):
     clean_id = item.strip()
     if clean_id.isdigit() and int(clean_id) not in ADMIN_IDS:
         ADMIN_IDS.append(int(clean_id))
 
+# Реквизиты студии
 SBP_PHONE = "89186675213"
 SBP_BANK = "Т-Банк"
 SBP_RECIPIENT = "Виолетта К."
@@ -50,18 +51,13 @@ GROUP_LINK = "https://t.me/+Drh0esF9_ZgyNzQ5"
 if not BOT_TOKEN:
     sys.exit("Ошибка: Токен бота не найден! Проверьте переменные окружения.")
 
-# Защищенная папка для постоянного хранения базы данных
+# Защищенная директория Bothost для предотвращения сброса базы при перезапусках
 PERSISTENT_DIR = os.getenv("DATA_DIR", "/app/data" if os.path.exists("/app/data") else ".")
 os.makedirs(PERSISTENT_DIR, exist_ok=True)
 DB_NAME = os.path.join(PERSISTENT_DIR, "fitness_club.db")
 
+# Рабочие тарифы студии (тестовый тариф удален)
 TARIFFS = {
-    "test": {
-        "title": "Тестовая оплата (проверка)",
-        "price": 1,
-        "days": 1,
-        "is_trial": False
-    },
     "trial": {
         "title": "Пробное занятие",
         "price": 600,
@@ -236,9 +232,8 @@ def get_main_menu_kb() -> ReplyKeyboardMarkup:
     )
 
 def get_tariffs_kb(has_used_trial: bool) -> InlineKeyboardMarkup:
-    buttons = [
-        [InlineKeyboardButton(text="🧪 Тест (для проверки) — 1 ₽", callback_data="buy:test")]
-    ]
+    buttons = []
+    
     if not has_used_trial:
         buttons.append([
             InlineKeyboardButton(text="✨ Пробное занятие — 600 ₽", callback_data="buy:trial")
@@ -338,6 +333,10 @@ async def handle_select_tariff(callback: types.CallbackQuery):
     tariff_key = callback.data.split(":")[1]
     tariff = TARIFFS.get(tariff_key)
 
+    if not tariff:
+        await callback.answer("Тариф не найден", show_alert=True)
+        return
+
     if tariff_key == "trial":
         user = await get_user(callback.from_user.id)
         if user and user["has_used_trial"]:
@@ -379,6 +378,10 @@ async def handle_back(callback: types.CallbackQuery):
 async def handle_paid_clicked(callback: types.CallbackQuery, state: FSMContext):
     tariff_key = callback.data.split(":")[1]
     tariff = TARIFFS.get(tariff_key)
+
+    if not tariff:
+        await callback.answer("Тариф не найден", show_alert=True)
+        return
 
     if tariff["is_trial"]:
         user = await get_user(callback.from_user.id)
@@ -627,6 +630,7 @@ async def handle_admin_students(callback: types.CallbackQuery):
     await callback.message.edit_text(full_text, reply_markup=get_admin_main_kb())
     await callback.answer()
 
+# --- Ручная выдача абонемента ---
 @dp.callback_query(F.data == "adm_panel:manual_sub")
 async def handle_manual_sub_start(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id not in ADMIN_IDS:
@@ -714,6 +718,7 @@ async def handle_manual_grant(callback: types.CallbackQuery, state: FSMContext, 
     )
     await callback.answer()
 
+# --- Массовая рассылка ---
 @dp.callback_query(F.data == "adm_panel:broadcast")
 async def handle_broadcast_start(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id not in ADMIN_IDS:
@@ -778,7 +783,7 @@ async def main():
         logging.warning(f"Не удалось обновить описание бота: {e}")
 
     await bot.delete_webhook(drop_pending_updates=True)
-    print(f">>> БОТ ЗАПУЩЕН! СПИСОК АДМИНИСТРАТОРОВ: {ADMIN_IDS} <<<")
+    print(f">>> БОТ ЗАПУЩЕН! АДМИНИСТРАТОРЫ: {ADMIN_IDS} <<<")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
