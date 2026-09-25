@@ -33,7 +33,7 @@ ADMIN_CONTACT = os.getenv("ADMIN_CONTACT", "@juesmely")
 # Администраторы с полным доступом к панели и подтверждениям
 ADMIN_IDS: List[int] = [5014057300, 8772019633, 944829858]
 
-# Дополнительное чтение ID из переменных окружения (если указаны на хостинге)
+# Дополнительное чтение ID из переменных окружения
 env_admins = os.getenv("ADMIN_IDS", "")
 for item in env_admins.split(","):
     clean_id = item.strip()
@@ -51,22 +51,22 @@ GROUP_LINK = "https://t.me/+Drh0esF9_ZgyNzQ5"
 if not BOT_TOKEN:
     sys.exit("Ошибка: Токен бота не найден! Проверьте переменные окружения.")
 
-# Защищенная директория Bothost для предотвращения сброса базы при перезапусках
+# Защищенная директория Bothost для предотвращения сброса базы
 PERSISTENT_DIR = os.getenv("DATA_DIR", "/app/data" if os.path.exists("/app/data") else ".")
 os.makedirs(PERSISTENT_DIR, exist_ok=True)
 DB_NAME = os.path.join(PERSISTENT_DIR, "fitness_club.db")
 
-# Рабочие тарифы студии (тестовый тариф удален)
+# Каталог тарифов студии
 TARIFFS = {
     "trial": {
         "title": "Пробное занятие",
-        "price": 600,
+        "price": 500,
         "days": 1,
         "is_trial": True
     },
     "single": {
         "title": "Разовое занятие",
-        "price": 800,
+        "price": 700,
         "days": 1,
         "is_trial": False
     },
@@ -236,7 +236,7 @@ def get_tariffs_kb(has_used_trial: bool) -> InlineKeyboardMarkup:
     
     if not has_used_trial:
         buttons.append([
-            InlineKeyboardButton(text="✨ Пробное занятие — 600 ₽", callback_data="buy:trial")
+            InlineKeyboardButton(text="✨ Пробное занятие — 500 ₽", callback_data="buy:trial")
         ])
     else:
         buttons.append([
@@ -244,7 +244,7 @@ def get_tariffs_kb(has_used_trial: bool) -> InlineKeyboardMarkup:
         ])
 
     buttons.append([
-        InlineKeyboardButton(text="💃 Разовое занятие — 800 ₽", callback_data="buy:single")
+        InlineKeyboardButton(text="💃 Разовое занятие — 700 ₽", callback_data="buy:single")
     ])
     buttons.append([
         InlineKeyboardButton(text="⭐ Абонемент на месяц — 3 990 ₽", callback_data="buy:month")
