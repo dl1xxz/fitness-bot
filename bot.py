@@ -57,26 +57,35 @@ os.makedirs(PERSISTENT_DIR, exist_ok=True)
 DB_NAME = os.path.join(PERSISTENT_DIR, "fitness_club.db")
 
 # Каталог тарифов студии
+# with_group — отправлять ли ссылку на закрытую группу после подтверждения
 TARIFFS = {
     "trial": {
         "title": "Пробное занятие",
         "price": 500,
         "days": 1,
-        "is_trial": True
+        "is_trial": True,
+        "with_group": False
     },
     "single": {
         "title": "Разовое занятие",
         "price": 700,
         "days": 1,
-        "is_trial": False
+        "is_trial": False,
+        "with_group": False
     },
     "month": {
         "title": "Абонемент на месяц",
         "price": 3990,
         "days": 30,
-        "is_trial": False
+        "is_trial": False,
+        "with_group": True
     }
 }
+
+def get_group_link_line(tariff: Dict[str, Any]) -> str:
+    if tariff.get("with_group"):
+        return f"🔗 <b>Ссылка на закрытую группу:</b> {GROUP_LINK} 💘\n\n"
+    return ""
 
 # ==========================================================
 # 2. СОСТОЯНИЯ (FSM)
@@ -415,9 +424,15 @@ async def handle_receive_student_data(message: types.Message, state: FSMContext,
     
     await state.clear()
 
+    tariff = TARIFFS.get(tariff_key, {})
+    if tariff.get("with_group"):
+        wait_text = "Как только платёж подтвердится, вам придёт ссылка на группу и доступ к абонементу🫶🏻"
+    else:
+        wait_text = "Как только платёж подтвердится, вам придёт подтверждение записи🫶🏻"
+
     await message.answer(
         "⏳ <b>Ваша заявка отправлена администратору на проверку оплаты.</b>\n\n"
-        "Как только платёж подтвердится, вам придёт ссылка на группу и доступ к абонементу🫶🏻",
+        f"{wait_text}",
         reply_markup=get_main_menu_kb()
     )
 
@@ -461,7 +476,7 @@ async def handle_admin_confirm(callback: types.CallbackQuery, bot: Bot):
                 f"🎉 <b>Оплата подтверждена!</b>\n\n"
                 f"Тариф: <b>{tariff['title']}</b>\n"
                 f"Действует до: <b>{formatted_end}</b> включительно.\n\n"
-                f"🔗 <b>Ссылка на закрытую группу:</b> {GROUP_LINK} 💘\n\n"
+                f"{get_group_link_line(tariff)}"
                 "Ждем вас на занятиях по адресу: ул. Станиславского, 85к1🫶🏻"
             )
         )
@@ -702,7 +717,7 @@ async def handle_manual_grant(callback: types.CallbackQuery, state: FSMContext, 
                 f"🎉 <b>Вам активирован абонемент администратором студии!</b>\n\n"
                 f"Тариф: <b>{tariff['title']}</b>\n"
                 f"Действует до: <b>{formatted_end}</b> включительно.\n\n"
-                f"🔗 <b>Ссылка на закрытую группу:</b> {GROUP_LINK} 💘\n\n"
+                f"{get_group_link_line(tariff)}"
                 "Ждем вас на занятиях по адресу: ул. Станиславского, 85к1🫶🏻"
             )
         )
